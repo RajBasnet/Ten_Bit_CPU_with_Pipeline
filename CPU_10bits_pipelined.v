@@ -3,7 +3,7 @@
 // Company: 
 // Engineer: 
 // 
-// Create Date: 03/30/2020 02:54:52 AM
+// Create Date: 04/05/2020 08:26:56 AM
 // Design Name: 
 // Module Name: CPU_10bits_pipelined
 // Project Name: 
@@ -20,11 +20,92 @@
 //////////////////////////////////////////////////////////////////////////////////
 
 
-module CPU_10bits_pipelined(input clock, input reset, output done, output [9:0] result);
-    wire [9:0] instruction;
-    reg [9:0] address; 
+module CPU_10bits_pipelined();
+endmodule
+
+
+/*
+	This example shows part of a instruction pipeline. Only the first two stages are given: fetch and decode.
+	For this system, there is only two instructions: addi and shift right. 
+	9-bit instruction format: inst[8] is the opcode, inst[7] selects the register, and inst[6:0] is the immediate value.
+*/
+
+module pipeTB();
+	reg clk, rst;
+
+	pipeLine pipe0(clk, rst);
+
+	always #5 clk = ~clk;
+
+	initial begin
+		clk = 0;
+		rst = 1;
+
+		#15 rst = 0;
+	end
+
+endmodule
+
+
+module pipeLine(clk, rst);
+	input clk, rst; 
+	wire [9:0] decode_out, decode_out_reg;
+	wire [9:0] inst, fetch_reg;
+	wire [9:0] imm;
+	wire ALU_OP, regSel;
+
+	FetchStage fetch0(clk, rst, inst);
+	// instead of sending the instruction directly to the next stage, we store it in a register first
+	reg9Bit fetchReg(~clk, rst, 1'b1, inst, fetch_reg);  	// notice that the register stores data on the falling edge of the clock
+
+	DecodeStage d0(fetch_reg, decode_out);
+	// create a register the stores all data passed to the next stage
+	reg11Bit decodeReg(~clk, rst, 1'b1, decode_out, decode_out_reg);   // notice that the register stores on the falling edge of the clock
+
+	// decode_out contains 3 signals: ALU_OP, regSel, and the immidiate value/shift amount
+	assign ALU_OP = decode_out_reg[10];
+	assign regSel = decode_out_reg[9];
+	assign imm = decode_out_reg[8:0];
+
+	// the next stage goes here
+endmodule
+
+
+/* 	every clock cycle, this module fetches the next instruction 
+   	from memory and increments the program counter. 
+*/
+module Fetch_Decode_Stage(input clk, input reset); // goes to the instruction memory
+	
+	reg [9:0] PC;
+    wire [9:0] address;
     
-    wire [1:0] alu_op;
+	assign address = PC;
+
+	// increment the program counter
+	always @(posedge clk) begin
+		if (reset) begin
+			PC <= 10'b0000000000;
+		end
+		else begin
+			PC <= PC + 1;
+		end
+	end
+	
+	wire [9:0] instruction;
+	// instruction memory goes here 
+	InstructionMemory IM(.clock(clk), .address(address), .instruction(instruction));
+	/*initial begin 
+		inst = 9'b000000000;
+		#15
+		inst = 9'b00000011;  	  // shift r0, 3
+
+		#10 inst = 9'b100000001;  // add r0, 1
+		#10 inst = 9'b111111111;  // add r1, -1
+		#10 inst = 9'b010000101;  // shift r1, 5
+		#10 inst = 9'b110001111;  // add r1, 15
+	end */	
+	
+	wire [1:0] alu_op;
     wire alu_src;
     wire mem_write;
     wire mem_read;
@@ -33,52 +114,85 @@ module CPU_10bits_pipelined(input clock, input reset, output done, output [9:0] 
     wire branch;
     wire reg_write;
     wire [1:0] ALU_Control;
-    wire [9:0] ALU_output;
-    wire [9:0] C0; 
     
-    always begin
-           #100 address = (~reset) ? address + 4'b0001: 'b0000;
-           if (branch == 1 && instruction[9:7] == 3'b110 && C0 == 10'b0000000001) 
-                address = address + {{3{instruction[6]}},instruction[6:0]}; 
-           if (branch == 1 && instruction[9:7] == 3'b101 && C0 == 10'b0000000000)
-                address = address + {{3{instruction[6]}},instruction[6:0]}; 
-           if (instruction[9:7] == 3'b111)
-                address = 10'bxxxxxxxxxx;
-    end
-    
-    InstructionMemory IM(.clock(clock), .address(address), .instruction(instruction));
-    Control_Unit control(.opcode(instruction[9:7]), .alu_op(alu_op), .alu_src(alu_src), .mem_write(mem_write), .mem_read(mem_read),
+	Control_Unit control(.opcode(instruction[9:7]), .alu_op(alu_op), .alu_src(alu_src), .mem_write(mem_write), .mem_read(mem_read),
                          .mem_to_reg(mem_to_reg), .write_back(write_back), .branch(branch), .reg_write(reg_write), .ALU_Control(ALU_Control));
+    
+    wire [9:0] C0;  
+    assign C0 = 10'b0000000001;                   
+    always @(branch) begin
+           if (branch == 1 && instruction[9:7] == 3'b110 && C0 == 10'b0000000001) 
+                PC = PC + {{3{instruction[6]}},instruction[6:0]}; 
+           if (branch == 1 && instruction[9:7] == 3'b101 && C0 == 10'b0000000000)
+                PC = PC + {{3{instruction[6]}},instruction[6:0]}; 
+           if (instruction[9:7] == 3'b111)
+                PC = 10'bxxxxxxxxxx;
+    end
     
     wire [2:0] reg_dst;    
     wire [2:0] Reg1;
-    assign Reg1 = (instruction[9:7] == 3'b101 || instruction[9:7] == 3'b110) ? 3'bxxx: instruction[6:4];
     wire [2:0] Reg2;
-    assign Reg2 = instruction[2:0];
-    wire [9:0] Reg_or_Num;  
-    
+    wire [9:0] Reg_or_Num; 
     wire [9:0] write_data; 
     wire [9:0] read_data;
     wire [9:0] read_data_1;
     wire [9:0] read_data_2;  
     
-    assign reg_dst = (instruction[9:7] == 3'b100) ? 3'b000: Reg1; 
-    
-    RegFile reg_file(.clk(clock), .reset(reset), .write_en(reg_write), .reg_write_dest(reg_dst), .write_data(write_data),
+    assign Reg1 = (instruction[9:7] == 3'b101 || instruction[9:7] == 3'b110) ? 3'bxxx: instruction[6:4]; 
+    assign Reg2 = instruction[2:0];
+                        
+    RegFile reg_file(.clk(clk), .reset(reset), .write_en(reg_write), .reg_write_dest(reg_dst), .write_data(write_data),
                      .read_addr_1(Reg1), .read_data_1(read_data_1), .read_addr_2(Reg2), .read_data_2(read_data_2));
-                     
-    mux M0(.A1({{6{instruction[3]}},instruction[3:0]}), .A2(read_data_2), .Sel(alu_src), .Y(Reg_or_Num));
+
+endmodule
+
+
+// In this example, there are only 2 instructions: add register with immediate, and NOP
+// There are only 2 registers: r0 and r1.
+module Execute_Memory_Stage(input clk, input [9:0] instruction, output [9:0] ALU_output);
+	
+	wire read_data_1;
+	wire read_data_2;
+	wire alu_src;
+	wire Reg_or_Num;
+	wire [2:0] ALU_Control;
+	wire write_data;
+	wire mem_to_reg;
+	wire mem_write;
+	wire mem_read;
+	wire read_data;
+	wire C0;
+	
+	mux M0(.A1({{6{instruction[3]}},instruction[3:0]}), .A2(read_data_2), .Sel(alu_src), .Y(Reg_or_Num));
     
     ALU_module ALU(.ALU_Control(ALU_Control[0]), .A(read_data_1), .B(Reg_or_Num), .ALU_output(ALU_output)); 
     
-    DataMemory DM(.clk(clock), .address(instruction[3:0]), .write_data(read_data_1), .write_en(mem_write), .mem_read(mem_read), .read_data(read_data));
+    DataMemory DM(.clk(clk), .address(instruction[3:0]), .write_data(read_data_1), .write_en(mem_write), .mem_read(mem_read), .read_data(read_data));
     
     assign write_data = (mem_to_reg == 1)? read_data: ALU_output;  
     assign C0 = (instruction[9:7] == 3'b100)? write_data : C0;
-    
-    assign result = (branch == 1) ? 10'bxxxxxxxxxx: (ALU_Control == 2'b10) ? 10'bZZZZZZZZ: ALU_output;
-    assign done = (instruction[9:7] == 3'b111) ? 1 : 0;
-                
+endmodule
+
+module reg12Bit(input clk, reset, en, input [11:0] data_in, output reg [11:0]data_out);
+
+	always @(posedge clk) begin
+		if (reset) 
+			data_out <= 12'b000000000000;
+		else if (en == 1'b1)
+			data_out <= data_in;
+	end
+
+endmodule
+
+module reg10Bit(input clk, reset, en, input [9:0] data_in,  output reg [9:0] data_out);
+
+	always @(posedge clk) begin
+		if (reset) 
+			data_out <= 10'b0000000000;
+		else if (en == 1'b1)
+			data_out <= data_in;
+	end
+
 endmodule
 
 module InstructionMemory(input clock, input [9:0] address, output reg [9:0] instruction);
